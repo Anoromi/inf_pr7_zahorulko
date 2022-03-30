@@ -151,7 +151,7 @@ impl IndexParser {
     }
 }
 
-pub trait Segments : Default + VariableSave + Debug + Send {
+pub trait Segments : Default + VariableSave + Debug + Send + Sync {
     fn selector_for(value: &'_ str) -> fn(&mut Self, u8) -> ();
 }
 
@@ -172,7 +172,7 @@ impl VariableSave for CommonSegments {
 
     async fn variable_load(reader: &mut BufReader<File>) -> Result<Self, Error> {
         let mut out = CommonSegments::new();
-        reader.read(&mut out.bytes).await;
+        reader.read(&mut out.bytes).await?;
         Ok(out)
     }
 }
@@ -492,13 +492,14 @@ impl ParserBuilder for IndexedBuilder {
     }
 }
 
-struct Dictionary {
+struct Dictionary<S : Segments> {
     pointer_part: BufReader<File>,
     lexical_part: BufReader<File>,
     index_part: BufReader<File>,
+    segment : PhantomData<S>
 }
 
-impl<> Dictionary {
+impl<S : Segments> Dictionary<S> {
     async fn new(directory: &String) -> Result<Self, Error> {
         Ok(Self {
             pointer_part: BufReader::new(File::open(&format!("{directory}/dictionary.txt")).await?),
@@ -506,6 +507,7 @@ impl<> Dictionary {
                 File::open(&format!("{directory}/lexical_part.txt")).await?,
             ),
             index_part: BufReader::new(File::open(&format!("{directory}/index_part.txt")).await?),
+            segment: PhantomData::<S>
         })
     }
 
@@ -548,7 +550,7 @@ impl<> Dictionary {
 }
 
 pub struct IndexTermProvider<S : Segments> {
-    dictionary: Dictionary,
+    dictionary: Dictionary<S>,
     first_part: String,
     first_part_pointer: Option<usize>,
     remaining_size: usize,
@@ -644,7 +646,7 @@ impl<S : Segments> TermProvider for IndexTermProvider<S> {
         }
 
         // dbg!("list");
-        let indexes = SortedLinkedMap::<usize, UsageData>::variable_load(&mut self.dictionary.index_part)
+        let indexes = SortedLinkedMap::<usize, UsageData<S>>::variable_load(&mut self.dictionary.index_part)
             .await
             .ok()?;
         // dbg!("list end");
@@ -869,7 +871,7 @@ async fn loader_tst() -> Result<(), Error> {
     // dbg!(IndexedCursor::load(&mut reader).await?);
     // dbg!(IndexedCursor::load(&mut reader).await?);
 
-    let mut reader = IndexTermProvider::new(&"./res".to_string()).await?;
+    let mut reader = IndexTermProvider::<CommonSegments>::new(&"./res".to_string()).await?;
     dbg!(reader.next_term().await);
     let n = reader.next_term().await.unwrap();
     println!("{}", n.indexes.len());
@@ -891,7 +893,7 @@ async fn loader_tst_buff() -> Result<(), Error> {
     // dbg!(IndexedCursor::load(&mut reader).await?);
     // dbg!(IndexedCursor::load(&mut reader).await?);
 
-    let mut reader = IndexTermProvider::new(&"./buffer/11".to_string()).await?;
+    let mut reader = IndexTermProvider::<CommonSegments>::new(&"./buffer/11".to_string()).await?;
     dbg!(reader.remaining_size);
     dbg!(reader.next_term().await);
     dbg!(reader.next_term().await);
