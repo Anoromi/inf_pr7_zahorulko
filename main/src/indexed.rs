@@ -3,9 +3,9 @@ use std::{
     cmp::Reverse,
     collections::{BinaryHeap, BTreeMap},
     io::{Error, SeekFrom},
-    marker::Send,
+    marker::{Send, PhantomData},
     mem::size_of,
-    sync::Arc,
+    sync::Arc, fmt::Debug,
 };
 use std::future::Future;
 
@@ -136,7 +136,7 @@ pub struct IndexedTermSaver {}
 // }
 
 pub struct IndexParser {
-    b_tree: BTreeMap<String, IndexedTerm<Self>>,
+    b_tree: BTreeMap<String, IndexedTerm<<IndexParser as Parser>::Segments>>,
     tree_max_size: usize,
     lexical_max_size: u8,
 }
@@ -151,7 +151,7 @@ impl IndexParser {
     }
 }
 
-pub trait Segments : Default + VariableSave {
+pub trait Segments : Default + VariableSave + Debug + Send {
     fn selector_for(value: &'_ str) -> fn(&mut Self, u8) -> ();
 }
 
@@ -209,7 +209,7 @@ impl<S : Segments> UsageData<S> {
     fn new() -> Self {
         Self {
             use_count: 0,
-            segments: CommonSegments::new(),
+            segments: S::default(),
         }
     }
 
@@ -219,7 +219,7 @@ impl<S : Segments> UsageData<S> {
     }
 
     /// Get a mutable reference to the word usage's segments.
-    pub fn segments_mut(&mut self) -> &mut CommonSegments {
+    pub fn segments_mut(&mut self) -> &mut S {
         &mut self.segments
     }
 }
@@ -228,7 +228,7 @@ impl<S : Segments> UsageData<S> {
 impl Parser for IndexParser {
     type Term = IndexedTerm<Self::Segments>;
     type Reader = RepeatedXmlReader<CommU8Provider, CommCharInterpreter>;
-    type Provider = IndexTermProvider;
+    type Provider = IndexTermProvider<Self::Segments>;
     type Segments = CommonSegments;
 
     async fn parse(&mut self, reader: &mut Self::Reader, ind: usize) -> ParserCallback {
@@ -498,7 +498,7 @@ struct Dictionary {
     index_part: BufReader<File>,
 }
 
-impl Dictionary {
+impl<> Dictionary {
     async fn new(directory: &String) -> Result<Self, Error> {
         Ok(Self {
             pointer_part: BufReader::new(File::open(&format!("{directory}/dictionary.txt")).await?),
@@ -509,7 +509,7 @@ impl Dictionary {
         })
     }
 
-    async fn get_term(&mut self, cursor: IndexedCursor) -> Result<IndexedTerm, Error> {
+    async fn get_term(&mut self, cursor: IndexedCursor) -> Result<IndexedTerm<S>, Error> {
         self.lexical_part
             .seek(SeekFrom::Start(cursor.lexical_pointer as u64))
             .await?;
@@ -537,7 +537,7 @@ impl Dictionary {
         self.index_part
             .seek(SeekFrom::Start(cursor.indexes_pointer as u64))
             .await?;
-        let list = SortedLinkedMap::<usize, UsageData>::variable_load(&mut self.index_part).await?;
+        let list = SortedLinkedMap::<usize, UsageData<S>>::variable_load(&mut self.index_part).await?;
 
         Ok(IndexedTerm {
             term: start,
@@ -547,14 +547,15 @@ impl Dictionary {
     }
 }
 
-pub struct IndexTermProvider {
+pub struct IndexTermProvider<S : Segments> {
     dictionary: Dictionary,
     first_part: String,
     first_part_pointer: Option<usize>,
     remaining_size: usize,
+    segment_date : PhantomData<S>
 }
 
-impl IndexTermProvider {
+impl<S : Segments> IndexTermProvider<S> {
     pub async fn new(directory: &String) -> Result<Self, Error> {
         let mut dictionary = Dictionary::new(directory).await?;
         let remaining_size = dictionary.pointer_part.read_u64().await? as usize;
@@ -563,12 +564,13 @@ impl IndexTermProvider {
             first_part: String::new(),
             first_part_pointer: None,
             remaining_size,
+            segment_date: PhantomData::<S>
         })
     }
 }
 
 #[async_trait]
-impl TermProvider for IndexTermProvider {
+impl<S : Segments> TermProvider for IndexTermProvider<S> {
     type Term = IndexedTerm<S>;
 
     async fn next_term(&mut self) -> Option<Self::Term> {
@@ -655,18 +657,18 @@ impl TermProvider for IndexTermProvider {
     }
 }
 
-struct IndexMergeSaver {
+struct IndexMergeSaver<S: Segments> {
     directory: String,
     pointer_part: BufWriter<File>,
     lexical_part: CountedWriter,
     index_part: CountedWriter,
-    buffer_items: Vec<IndexedTerm>,
+    buffer_items: Vec<IndexedTerm<S>>,
     current_substr_size: u16,
     max_part_size: u8,
     current_directory_size: u64,
 }
 
-impl IndexMergeSaver {
+impl<S : Segments> IndexMergeSaver<S> {
     async fn new(directory: String, max_size: u8) -> Result<Self, Error> {
         let mut pointer_part = BufWriter::with_capacity(
             1024 * 1024 * 5,
@@ -735,7 +737,7 @@ impl IndexMergeSaver {
         Ok(())
     }
 
-    async fn push(&mut self, term: IndexedTerm) -> Result<(), Error> {
+    async fn push(&mut self, term: IndexedTerm<S>) -> Result<(), Error> {
         if self.buffer_items.len() == self.max_part_size as usize {
             self.flush().await?;
             self.current_substr_size = 0;
