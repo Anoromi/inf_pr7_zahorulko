@@ -1,20 +1,21 @@
-
+use std::future::Future;
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, BTreeMap},
+    collections::{BTreeMap, BinaryHeap},
+    fmt::Debug,
     io::{Error, SeekFrom},
-    marker::{Send, PhantomData},
+    marker::{PhantomData, Send},
     mem::size_of,
-    sync::Arc, fmt::Debug,
+    sync::Arc,
 };
-use std::future::Future;
 
 use async_trait::async_trait;
 use chrono::Local;
 use futures::future::join_all;
 use modular_bitfield::{
     bitfield,
-    prelude::{B1, B6}, Specifier,
+    prelude::{B1, B6},
+    Specifier,
 };
 use tokio::{
     fs::{self, File},
@@ -25,48 +26,48 @@ use tokio::{
 
 use mcr::VariableSaveD;
 use save::save::VariableSave;
-use save::u8::{CommU8Provider, read_char, read_char_reader, read_line, read_to_space, U8Provider};
-use save::writer::{CountedWriter, variable_load, variable_save_usize};
+use save::u8::{read_char_reader, CommU8Provider};
+use save::writer::{variable_load, CountedWriter, variable_save_usize};
 
-use crate::{
-    adreader::RepeatedXmlReader,
-    list::SortedLinkedList,
-    listmap::SortedLinkedMap,
-    parser::{
-        Merger, Parser, ParserBuilder, ParserCallback, remove_buffer, Term, TermProvider, TermSaver,
-    }, reader::{CommCharInterpreter, Reader, XmlReader},
-};
-use crate::adreader::ZoneRepeatedReader;
+use crate::parser::IndexPositions;
 use crate::reader::ReaderResult;
+use crate::rep_reader::ZoneRepeatedReader;
+use crate::{
+    listmap::SortedLinkedMap,
+    parser::{remove_buffer, Merger, Parser, ParserBuilder, ParserCallback, Term, TermProvider},
+    reader::{CommCharInterpreter, Reader},
+    rep_reader::RepeatedXmlReader,
+    segment::{CommonSegmentSelector, CommonSegments, SegmentSelector, Segments},
+};
 
 #[derive(Debug)]
-pub struct IndexedTerm<S : Segments> {
+pub struct IndexedTerm<S: Segments> {
     pub term: String,
     pub use_count: u64,
     pub indexes: SortedLinkedMap<usize, UsageData<S>>,
 }
 
-impl<S : Segments> Ord for IndexedTerm<S> {
+impl<S: Segments> Ord for IndexedTerm<S> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.term.cmp(&other.term)
     }
 }
 
-impl<S : Segments> PartialOrd for IndexedTerm<S> {
+impl<S: Segments> PartialOrd for IndexedTerm<S> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<S : Segments> Eq for IndexedTerm<S> {}
+impl<S: Segments> Eq for IndexedTerm<S> {}
 
-impl<S : Segments> PartialEq for IndexedTerm<S> {
+impl<S: Segments> PartialEq for IndexedTerm<S> {
     fn eq(&self, other: &Self) -> bool {
         self.term == other.term
     }
 }
 
-impl<S : Segments> IndexedTerm<S> {
+impl<S: Segments> IndexedTerm<S> {
     pub fn new(term: String) -> Self {
         Self {
             term,
@@ -76,7 +77,7 @@ impl<S : Segments> IndexedTerm<S> {
     }
 }
 
-impl<S : Segments> Term for IndexedTerm<S> {
+impl<S: Segments> Term for IndexedTerm<S> {
     fn combine(&mut self, other: Self) {
         self.use_count += other.use_count;
         self.indexes.or(other.indexes, |_, _| {});
@@ -139,73 +140,31 @@ pub struct IndexParser {
     b_tree: BTreeMap<String, IndexedTerm<<IndexParser as Parser>::Segments>>,
     tree_max_size: usize,
     lexical_max_size: u8,
+    segment_selector: <IndexParser as Parser>::SegmentSelector,
 }
 
 impl IndexParser {
-    pub fn new(tree_max_size: usize, lexical_max_size: u8) -> Self {
+    pub fn new(
+        tree_max_size: usize,
+        lexical_max_size: u8,
+        segment_selector: <IndexParser as Parser>::SegmentSelector,
+    ) -> Self {
         Self {
             b_tree: BTreeMap::new(),
             tree_max_size,
             lexical_max_size,
-        }
-    }
-}
-
-pub trait Segments : Default + VariableSave + Debug + Send + Sync {
-    fn selector_for(value: &'_ str) -> fn(&mut Self, u8) -> ();
-}
-
-#[bitfield]
-#[derive(Debug)]
-pub struct CommonSegments {
-    title: B1,
-    text: B1,
-    nothing: B6,
-}
-
-#[async_trait]
-impl VariableSave for CommonSegments {
-    async fn variable_save(&mut self, writer: &mut BufWriter<File>) -> Result<usize, Error> {
-        writer.write(&self.bytes).await?;
-        Ok(self.bytes.len())
-    }
-
-    async fn variable_load(reader: &mut BufReader<File>) -> Result<Self, Error> {
-        let mut out = CommonSegments::new();
-        reader.read(&mut out.bytes).await?;
-        Ok(out)
-    }
-}
-
-impl Default for CommonSegments {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Segments for CommonSegments {
-    #[inline]
-    fn selector_for(value: &'_ str) -> fn(&mut CommonSegments, <B1 as Specifier>::InOut) -> () {
-        match value {
-            "text" => {
-                CommonSegments::set_text
-            }
-            "title" => {
-                CommonSegments::set_title
-            }
-            _ => panic!("Unexpected value {}", value)
+            segment_selector,
         }
     }
 }
 
 #[derive(VariableSaveD, Debug)]
-pub struct UsageData<S : Segments> {
+pub struct UsageData<S: Segments> {
     use_count: usize,
     segments: S,
 }
 
-impl<S : Segments> UsageData<S> {
+impl<S: Segments> UsageData<S> {
     fn new() -> Self {
         Self {
             use_count: 0,
@@ -230,9 +189,9 @@ impl Parser for IndexParser {
     type Reader = RepeatedXmlReader<CommU8Provider, CommCharInterpreter>;
     type Provider = IndexTermProvider<Self::Segments>;
     type Segments = CommonSegments;
+    type SegmentSelector = CommonSegmentSelector;
 
     async fn parse(&mut self, reader: &mut Self::Reader, ind: usize) -> ParserCallback {
-
         // while self.b_tree.len() < self.tree_max_size {
         //     let word = reader.next_word().await;
 
@@ -256,20 +215,49 @@ impl Parser for IndexParser {
         // }
         // ParserCallback::Full
         let mut current_index = reader.zones_len();
-
+        let mut current_applier = self.segment_selector.applier_for(reader.zone());
         // let mut current_applier =
-        while self.b_tree.len() < self.tree_max_size {
+        while self.b_tree.len() < self.tree_max_size && current_index > 0 {
             match reader.next_word().await {
                 None => break,
-                Some(v) => {
-                    match v {
-                        ReaderResult::Word(w) => {}
-                        ReaderResult::AttributeEnd => {
-                            reader.transform_zone().await;
-                            current_index -= 1;
+                Some(v) => match v {
+                    ReaderResult::Word(word) => match self.b_tree.get_mut(&word) {
+                        Some(term) => term.indexes.push_or_apply(
+                            ind,
+                            || {
+                                let mut segment = CommonSegments::default();
+                                current_applier(&mut segment);
+                                UsageData {
+                                    use_count: 1,
+                                    segments: segment,
+                                }
+                            },
+                            |v| {
+                                v.use_count += 1;
+                                current_applier(&mut v.segments);
+                            },
+                        ),
+                        None => {
+                            let mut term = IndexedTerm::new(word.clone());
+                            let data = UsageData {
+                                use_count: 1,
+                                segments: {
+                                    let mut segment = CommonSegments::default();
+                                    current_applier(&mut segment);
+                                    segment
+                                },
+                            };
+                            term.indexes.push(ind, data);
+                            term.use_count += 1;
+                            self.b_tree.insert(word, term);
                         }
+                    },
+                    ReaderResult::AttributeEnd => {
+                        reader.transform_zone().await;
+                        current_index -= 1;
+                        current_applier = self.segment_selector.applier_for(reader.zone())
                     }
-                }
+                },
             }
         }
         todo!()
@@ -310,7 +298,7 @@ impl Merger for IndexMerger {
 
     async fn merge(
         &mut self,
-        input_file: Arc<Vec<String>>,
+        input_file: Arc<Mutex<IndexPositions>>,
         buffer_files: Arc<Mutex<Vec<String>>>,
         destination: String,
     ) -> Result<(), Error> {
@@ -377,7 +365,7 @@ impl Merger for IndexMerger {
                     if v.0 == next.0 {
                         let v = q.pop().unwrap();
                         values.push(v.1);
-                        next.0.0.combine(v.0.0);
+                        next.0 .0.combine(v.0 .0);
                     } else {
                         break;
                     }
@@ -415,9 +403,9 @@ impl Merger for IndexMerger {
                 //         p_q.push((Reverse(provider), *i));
                 //     }
                 // }
-                lexeme_count += next.0.0.get_use_count();
+                lexeme_count += next.0 .0.get_use_count();
                 term_count += 1;
-                saver.push(next.0.0).await?;
+                saver.push(next.0 .0).await?;
                 values.clear();
                 tstind += 1;
                 // if tstind % 1 == 0 {
@@ -452,12 +440,19 @@ impl Merger for IndexMerger {
     }
 }
 
-async fn write_input_files(path: String, input_files: Arc<Vec<String>>) {
+async fn write_input_files(path: String, input_files: Arc<Mutex<IndexPositions>>) {
+    let input_files = input_files.lock().await;
     let mut file = BufWriter::new(File::create(path).await.unwrap());
-    for v in input_files.iter() {
-        file.write_all(v.clone().as_bytes()).await.unwrap();
-        file.write_all("\n".as_bytes()).await.unwrap();
+    for (st, i) in input_files
+        .ids
+        .iter()
+        .map(|(i, v)| (&input_files.names[*i].0, *v))
+    {
+        file.write_all(st.as_bytes()).await.unwrap();
+        file.write_u64(i as u64).await.unwrap();
+        file.write_all(&[b'\n']).await.unwrap();
     }
+
     file.flush().await.unwrap();
 }
 
@@ -482,24 +477,31 @@ impl ParserBuilder for IndexedBuilder {
     type Parser = IndexParser;
 
     fn build(&mut self) -> Self::Parser {
-        IndexParser::new(self.tree_max_size, self.lexical_max_size)
+        IndexParser::new(
+            self.tree_max_size,
+            self.lexical_max_size,
+            CommonSegmentSelector::new(),
+        )
     }
 
     async fn reader_from_file(&mut self, file: File) -> <Self::Parser as Parser>::Reader {
-        RepeatedXmlReader::<_, CommCharInterpreter>::new(CommU8Provider::new(BufReader::new(file)), self.attributes.clone())
-            .await
-            .unwrap()
+        RepeatedXmlReader::<_, CommCharInterpreter>::new(
+            CommU8Provider::new(BufReader::new(file)),
+            self.attributes.clone(),
+        )
+        .await
+        .unwrap()
     }
 }
 
-struct Dictionary<S : Segments> {
+struct Dictionary<S: Segments> {
     pointer_part: BufReader<File>,
     lexical_part: BufReader<File>,
     index_part: BufReader<File>,
-    segment : PhantomData<S>
+    segment: PhantomData<S>,
 }
 
-impl<S : Segments> Dictionary<S> {
+impl<S: Segments> Dictionary<S> {
     async fn new(directory: &String) -> Result<Self, Error> {
         Ok(Self {
             pointer_part: BufReader::new(File::open(&format!("{directory}/dictionary.txt")).await?),
@@ -507,7 +509,7 @@ impl<S : Segments> Dictionary<S> {
                 File::open(&format!("{directory}/lexical_part.txt")).await?,
             ),
             index_part: BufReader::new(File::open(&format!("{directory}/index_part.txt")).await?),
-            segment: PhantomData::<S>
+            segment: PhantomData::<S>,
         })
     }
 
@@ -539,7 +541,8 @@ impl<S : Segments> Dictionary<S> {
         self.index_part
             .seek(SeekFrom::Start(cursor.indexes_pointer as u64))
             .await?;
-        let list = SortedLinkedMap::<usize, UsageData<S>>::variable_load(&mut self.index_part).await?;
+        let list =
+            SortedLinkedMap::<usize, UsageData<S>>::variable_load(&mut self.index_part).await?;
 
         Ok(IndexedTerm {
             term: start,
@@ -549,15 +552,15 @@ impl<S : Segments> Dictionary<S> {
     }
 }
 
-pub struct IndexTermProvider<S : Segments> {
+pub struct IndexTermProvider<S: Segments> {
     dictionary: Dictionary<S>,
     first_part: String,
     first_part_pointer: Option<usize>,
     remaining_size: usize,
-    segment_date : PhantomData<S>
+    segment_date: PhantomData<S>,
 }
 
-impl<S : Segments> IndexTermProvider<S> {
+impl<S: Segments> IndexTermProvider<S> {
     pub async fn new(directory: &String) -> Result<Self, Error> {
         let mut dictionary = Dictionary::new(directory).await?;
         let remaining_size = dictionary.pointer_part.read_u64().await? as usize;
@@ -566,13 +569,13 @@ impl<S : Segments> IndexTermProvider<S> {
             first_part: String::new(),
             first_part_pointer: None,
             remaining_size,
-            segment_date: PhantomData::<S>
+            segment_date: PhantomData::<S>,
         })
     }
 }
 
 #[async_trait]
-impl<S : Segments> TermProvider for IndexTermProvider<S> {
+impl<S: Segments> TermProvider for IndexTermProvider<S> {
     type Term = IndexedTerm<S>;
 
     async fn next_term(&mut self) -> Option<Self::Term> {
@@ -646,9 +649,10 @@ impl<S : Segments> TermProvider for IndexTermProvider<S> {
         }
 
         // dbg!("list");
-        let indexes = SortedLinkedMap::<usize, UsageData<S>>::variable_load(&mut self.dictionary.index_part)
-            .await
-            .ok()?;
+        let indexes =
+            SortedLinkedMap::<usize, UsageData<S>>::variable_load(&mut self.dictionary.index_part)
+                .await
+                .ok()?;
         // dbg!("list end");
         self.remaining_size -= 1;
         Some(IndexedTerm {
@@ -670,7 +674,7 @@ struct IndexMergeSaver<S: Segments> {
     current_directory_size: u64,
 }
 
-impl<S : Segments> IndexMergeSaver<S> {
+impl<S: Segments> IndexMergeSaver<S> {
     async fn new(directory: String, max_size: u8) -> Result<Self, Error> {
         let mut pointer_part = BufWriter::with_capacity(
             1024 * 1024 * 5,
@@ -713,8 +717,8 @@ impl<S : Segments> IndexMergeSaver<S> {
                 self.index_part.passed() as usize,
                 v.use_count as usize,
             )
-                .save(&mut self.pointer_part)
-                .await?;
+            .save(&mut self.pointer_part)
+            .await?;
             self.index_part.push_variable(&mut v.indexes).await?;
             // self.index_part.push_sorted_indexes(v.indexes).await?;
             let other_part = &v.term.as_str()[self.current_substr_size as usize..];

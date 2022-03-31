@@ -252,7 +252,7 @@ impl<Provider: U8Provider + Send, Interpreter: CharInterpretation>
         })
     }
 
-    async fn divide_write(
+    pub async fn divide_write(
         &mut self,
         resdir: String,
         skips: u16,

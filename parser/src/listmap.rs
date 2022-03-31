@@ -30,7 +30,8 @@ impl<T: Ord, G> SortedLinkedMap<T, G> {
             size: 0,
         }
     }
-    fn addFirst(&mut self, key: T, value: G) {
+    #[inline]
+    fn add_first(&mut self, key: T, value: G) {
         self.start = Some(Box::new(Value(key, value, None)));
         self.size += 1;
     }
@@ -39,7 +40,7 @@ impl<T: Ord, G> SortedLinkedMap<T, G> {
         let current = &mut self.start;
         match current {
             None => {
-                self.addFirst(key, value);
+                self.add_first(key, value);
                 return;
             }
             Some(current) => {
@@ -167,6 +168,51 @@ impl<T: Ord, G> SortedLinkedMap<T, G> {
             }
         }
         None
+    }
+
+    pub fn push_or_apply(&mut self, key : T, value: impl FnOnce() ->  G, apply : impl FnOnce(&mut G) -> ()) {
+        let current = &mut self.start;
+        match current {
+            None => {
+                self.add_first(key, value());
+                return;
+            }
+            Some(current) => {
+                let mut current = (*current).as_mut();
+                while current.2.is_some() {
+                    if key <= current.0 {
+                        break;
+                    }
+                    current = current.2.as_mut().unwrap().as_mut();
+                }
+                match &mut current.2 {
+                    Some(_) if key < current.0 => {
+                        let k = mem::replace(&mut current.0, key);
+                        let v = mem::replace(&mut current.1, value());
+                        let w = mem::replace(&mut current.2, Some(Box::new(Value(k, v, None))));
+                        current.2.as_mut().unwrap().2 = w;
+                        self.size += 1;
+                    }
+                    Some(_) => {
+                        apply(&mut current.1)
+                    }
+                    None => {
+                        if key < current.0 {
+                            let k = mem::replace(&mut current.0, key);
+                            let v = mem::replace(&mut current.1, value());
+                            let w = mem::replace(&mut current.2, Some(Box::new(Value(k, v, None))));
+                            current.2.as_mut().unwrap().2 = w;
+                        } else if key > current.0 {
+                            current.2 = Some(Box::new(Value(key, value(), None)));
+                        }
+                        else {
+                            apply(&mut current.1)
+                        }
+                        self.size += 1;
+                    }
+                }
+            }
+        }
     }
 }
 

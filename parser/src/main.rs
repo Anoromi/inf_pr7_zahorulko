@@ -11,9 +11,10 @@ pub mod list;
 pub mod parser;
 pub mod reader;
 
-pub mod adreader;
+pub mod rep_reader;
 pub mod listmap;
 pub mod save;
+pub mod segment;
 
 static mut SYSTEM: Option<sysinfo::System> = None;
 

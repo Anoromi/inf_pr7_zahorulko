@@ -442,25 +442,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "main"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "egui",
- "futures",
- "log",
- "log4rs",
- "mcr",
- "modular-bitfield",
- "priority-queue",
- "save",
- "sysinfo",
- "tailcall",
- "tokio",
-]
-
-[[package]]
 name = "mcr"
 version = "0.1.0"
 dependencies = [
@@ -643,6 +624,25 @@ dependencies = [
  "redox_syscall 0.2.12",
  "smallvec",
  "windows-sys",
+]
+
+[[package]]
+name = "parser"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "egui",
+ "futures",
+ "log",
+ "log4rs",
+ "mcr",
+ "modular-bitfield",
+ "priority-queue",
+ "save",
+ "sysinfo",
+ "tailcall",
+ "tokio",
 ]
 
 [[package]]
@@ -985,6 +985,25 @@ name = "traitobject"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "efd1f82c56340fdf16f2a953d7bda4f8fdffba13d93b00844c25572110b26079"
+
+[[package]]
+name = "translator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "egui",
+ "futures",
+ "log",
+ "log4rs",
+ "modular-bitfield",
+ "parser",
+ "priority-queue",
+ "save",
+ "sysinfo",
+ "tailcall",
+ "tokio",
+]
 
 [[package]]
 name = "ttf-parser"

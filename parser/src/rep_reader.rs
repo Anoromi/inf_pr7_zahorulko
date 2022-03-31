@@ -6,17 +6,14 @@ use std::{
 };
 
 use async_trait::async_trait;
+use tokio::io::AsyncWriteExt;
 use tokio::{
     fs::{self, File},
     io::BufWriter,
 };
-use tokio::io::AsyncWriteExt;
 
-use crate::{
-    reader::{
-        CharInterpretation, CharType, Reader, ReaderResult, WordOption, WordProvider,
-        XmlWordProvider,
-    },
+use crate::reader::{
+    CharInterpretation, CharType, Reader, ReaderResult, WordOption, WordProvider, XmlWordProvider,
 };
 
 use save::u8::{read_char, CommU8Provider, U8Provider};
@@ -41,7 +38,7 @@ pub struct RepeatedXmlReader<Provider: U8Provider + Send, Interpreter: CharInter
 }
 
 impl<Provider: U8Provider + Send, Interpreter: CharInterpretation + Send>
-RepeatedXmlReader<Provider, Interpreter>
+    RepeatedXmlReader<Provider, Interpreter>
 {
     pub async fn new(reader: Provider, attribute_order: Arc<Vec<String>>) -> Result<Self, Error> {
         if attribute_order.len() == 0 {
@@ -57,39 +54,63 @@ RepeatedXmlReader<Provider, Interpreter>
         })
     }
 
-    async fn divide_write(
+    pub async fn divide_write(
         &mut self,
         resdir: String,
         skips: u16,
         mut index: Arc<AtomicU32>,
     ) -> Option<()> {
+        let skips = skips as u64 * self.zones_len() as u64;
         async fn wr(resdir: &String, index: &mut Arc<AtomicU32>) -> Option<BufWriter<File>> {
             let index = index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let name = format!("{}\\{}.xml", resdir.clone(), index);
-            fs::remove_file(name.clone()).await.unwrap();
+            fs::remove_file(&name).await;
             println!("{}", name);
+            dbg!(&name);
             Some(BufWriter::new(File::create(name).await.unwrap()))
         }
 
         let mut cur_file = wr(&resdir, &mut index).await?;
         let mut skip = skips;
-        cur_file.write(format!("<{}>\n", self.zone()).as_bytes());
+        // cur_file
+        //     .write(format!("<{}>\n", self.zone()).as_bytes())
+        //     .await
+        //     .ok()?;
+        let mut has_next = true;
         while let Some(s) = self.next_word().await {
+            if skip == 0 {
+                println!("Zero");
+                skip = skips;
+                cur_file.flush().await.unwrap();
+                cur_file = wr(&resdir, &mut index).await?;
+            }
+            if has_next {
+                cur_file
+                    .write(format!("<{}>\n", self.zone()).as_bytes())
+                    .await
+                    .ok()?;
+                    has_next = false;
+            }
             match s {
                 ReaderResult::Word(w) => {
-                    cur_file.write(w.as_bytes());
-                    cur_file.write(" ".as_bytes());
+                    cur_file.write(w.as_bytes()).await.ok()?;
+                    cur_file.write(" ".as_bytes()).await.ok()?;
                 }
                 ReaderResult::AttributeEnd => {
-                    cur_file.write(format!("\n<{}/>\n", self.zone()).as_bytes()).await.ok()?;
+                    println!("AttributeEndP {} {skip}", &self.zone());
+                    cur_file
+                        .write(format!("\n<{}/>\n", self.zone()).as_bytes())
+                        .await
+                        .ok()?;
                     self.transform_zone().await;
                     skip -= 1;
-                    if ((skips - skip) as usize) % self.zones_len() == 0 {
-                        cur_file.write(format!("<{}>\n", self.zone()).as_bytes()).await.ok()?;
-                    }
+                    has_next = true;
+                    // if ((skips - skip) as usize) % self.zones_len() == 0 {
                 }
             }
         }
+        cur_file.flush().await.unwrap();
+
         Some(())
         // loop {}
     }
@@ -97,9 +118,9 @@ RepeatedXmlReader<Provider, Interpreter>
 
 #[async_trait]
 impl<
-    Provider: U8Provider + std::marker::Send,
-    Interpreter: CharInterpretation + std::marker::Send,
-> Reader for RepeatedXmlReader<Provider, Interpreter>
+        Provider: U8Provider + std::marker::Send,
+        Interpreter: CharInterpretation + std::marker::Send,
+    > Reader for RepeatedXmlReader<Provider, Interpreter>
 {
     type UProvider = Provider;
     type Interpreter = Interpreter;
@@ -170,10 +191,10 @@ impl<
                     if d == '<'
                         && read_char(&mut self.reader).await? == '/'
                         && self
-                        .word_provider
-                        .next_word::<Interpreter, Provider>(&mut self.reader, None)
-                        .await?
-                        .contains(current_attribute)
+                            .word_provider
+                            .next_word::<Interpreter, Provider>(&mut self.reader, None)
+                            .await?
+                            .contains(current_attribute)
                     {
                         self.position = Position::Outside;
                         return Some(ReaderResult::AttributeEnd);
@@ -187,7 +208,7 @@ impl<
 
 #[async_trait]
 impl<Provider: U8Provider + Send, Interpreter: CharInterpretation + Send> ZoneRepeatedReader
-for RepeatedXmlReader<Provider, Interpreter>
+    for RepeatedXmlReader<Provider, Interpreter>
 {
     async fn transform_zone(&mut self) {
         self.attribute_index += 1;
@@ -210,4 +231,58 @@ pub trait ZoneRepeatedReader: Reader {
     fn zone(&self) -> &'_ str;
 
     fn zones_len(&self) -> usize;
+}
+
+#[cfg(test)]
+mod tst {
+    use std::{
+        io::Error,
+        sync::{atomic::AtomicU32, Arc},
+    };
+
+    use save::u8::CommU8Provider;
+    use tokio::{
+        fs::File,
+        io::BufReader,
+        task::{self, JoinHandle},
+    };
+
+    use crate::reader::{CommCharInterpreter, Reader, ReaderResult};
+
+    use super::{RepeatedXmlReader, ZoneRepeatedReader};
+
+    #[tokio::test]
+    async fn reader_test() -> Result<(), Error> {
+        let mut xml = RepeatedXmlReader::<_, CommCharInterpreter>::new(
+            CommU8Provider::new(BufReader::new(File::open(r#".\test\ha.xml"#).await?)),
+            Arc::new(vec!["title".to_string(), "text".to_string()]),
+        )
+        .await?;
+        while let Some(kar) = xml.next_word().await {
+            match kar {
+                ReaderResult::Word(w) => println!("{w}",),
+                ReaderResult::AttributeEnd => {
+                    println!("AttributeEnd {}", &xml.zone());
+                    xml.transform_zone().await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gra() -> Result<(), Error> {
+        let file = File::open(r#".\test\ha.xml"#).await?;
+        let index = Arc::new(AtomicU32::new(0));
+        let mut xml = RepeatedXmlReader::<_, CommCharInterpreter>::new(
+            CommU8Provider::new(BufReader::with_capacity(1024 * 1024, file)),
+            Arc::new(vec!["title".to_string(), "text".to_string()]),
+        )
+        .await
+        .unwrap();
+        xml.divide_write(".\\tvex".to_string(), 1, index).await;
+
+        println!();
+        Ok(())
+    }
 }
