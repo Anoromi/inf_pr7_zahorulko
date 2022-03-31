@@ -260,7 +260,7 @@ impl Parser for IndexParser {
                 },
             }
         }
-        todo!()
+        // todo!()
     }
 
     async fn provider_from_file(file: &String) -> Result<Self::Provider, Error> {

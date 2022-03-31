@@ -169,16 +169,19 @@ impl<P: Parser, M: Merger<Parser = P>, Pb: 'static + ParserBuilder<Parser = P>>
                 output_files,
                 builder
             ];
+            // println!("T {}", files.lock().await.names.len());
             tasks.push(task::spawn(async move {
                 let mut parser = builder.lock().await.build();
                 let (mut current_file_index, mut current_output, files_count) = {
                     let next_file = file_index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let mut files = files.lock().await;
-                    if files.names.len() >= next_file {
+                    if next_file >= files.names.len() {
+                        println!("Escape");
                         return;
                     }
                     (next_file, files.put(next_file), files.names.len())
                 };
+                println!("{current_file_index} {files_count}");
                 while current_file_index < files_count {
                     // let next_file = file_index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     // let mut flush_index = {

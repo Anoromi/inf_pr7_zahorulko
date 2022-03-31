@@ -65,8 +65,8 @@ impl<Provider: U8Provider + Send, Interpreter: CharInterpretation + Send>
             let index = index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let name = format!("{}\\{}.xml", resdir.clone(), index);
             fs::remove_file(&name).await;
-            println!("{}", name);
-            dbg!(&name);
+            // println!("{}", name);
+            // dbg!(&name);
             Some(BufWriter::new(File::create(name).await.unwrap()))
         }
 
@@ -79,7 +79,7 @@ impl<Provider: U8Provider + Send, Interpreter: CharInterpretation + Send>
         let mut has_next = true;
         while let Some(s) = self.next_word().await {
             if skip == 0 {
-                println!("Zero");
+                // println!("Zero");
                 skip = skips;
                 cur_file.flush().await.unwrap();
                 cur_file = wr(&resdir, &mut index).await?;
@@ -89,7 +89,7 @@ impl<Provider: U8Provider + Send, Interpreter: CharInterpretation + Send>
                     .write(format!("<{}>\n", self.zone()).as_bytes())
                     .await
                     .ok()?;
-                    has_next = false;
+                has_next = false;
             }
             match s {
                 ReaderResult::Word(w) => {
@@ -97,7 +97,7 @@ impl<Provider: U8Provider + Send, Interpreter: CharInterpretation + Send>
                     cur_file.write(" ".as_bytes()).await.ok()?;
                 }
                 ReaderResult::AttributeEnd => {
-                    println!("AttributeEndP {} {skip}", &self.zone());
+                    // println!("AttributeEndP {} {skip}", &self.zone());
                     cur_file
                         .write(format!("\n<{}/>\n", self.zone()).as_bytes())
                         .await

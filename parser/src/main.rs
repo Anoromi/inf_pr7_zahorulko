@@ -41,7 +41,7 @@ async fn main() {
         ));
     }
 
-    let mut files = fs::read_dir("..\\nex").unwrap();
+    let mut files = fs::read_dir("../gex").unwrap();
     let mut files_vec = Vec::<String>::new();
     let mut files_size = 0u64;
     while let Some(w) = files.next() {
@@ -67,7 +67,7 @@ async fn main() {
 
     let _handle = log4rs::init_config(config).unwrap();
 
-    let destination = ".\\res".to_string();
+    let destination = "../res".to_string();
     let buffer = ".\\buffer".to_string();
 
     log::info!("Files' overall size {} kb", files_size / 1024);

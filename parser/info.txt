@@ -1,0 +1,6 @@
+2022-03-31T13:49:11.368251900+03:00 INFO parser - Files' overall size 5888007 kb
+2022-03-31T13:49:11.368739900+03:00 INFO parser - Start at 13:49:11
+2022-03-31T13:49:11.368927500+03:00 INFO parser::parser - Cannot create a file when that file already exists. (os error 183)
+2022-03-31T13:49:15.706758700+03:00 INFO parser::indexed - Cannot create a file when that file already exists. (os error 183)
+2022-03-31T13:49:15.706831600+03:00 INFO parser::indexed - Merge starts at 13:49:15
+2022-03-31T13:49:15.708192500+03:00 INFO parser - End at 13:49:15
